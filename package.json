@@ -1,0 +1,25 @@
+{
+  "name": "ziachstund",
+  "version": "1.0.0",
+  "description": "Übungstagebuch für die Steirische Harmonika",
+  "private": true,
+  "license": "MIT",
+  "scripts": {
+    "android:add": "cap add android",
+    "android:sync": "cap sync android",
+    "android:open": "cap open android",
+    "ios:add": "cap add ios",
+    "ios:sync": "cap sync ios",
+    "symbole": "capacitor-assets generate"
+  },
+  "dependencies": {
+    "@capacitor/android": "^8.5.1",
+    "@capacitor/core": "^8.5.1",
+    "@capacitor/preferences": "^8.0.1",
+    "@capacitor/ios": "^8.5.1"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^8.5.1",
+    "@capacitor/assets": "^3.0.5"
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "appId": "at.ziachstund.app",
+  "appName": "Ziachstund",
+  "webDir": "docs",
+  "android": {
+    "backgroundColor": "#B5121B"
+  },
+  "ios": {
+    "backgroundColor": "#B5121B",
+    "contentInset": "always"
+  }
+}
