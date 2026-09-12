@@ -1,0 +1,137 @@
+name: iOS bauen
+
+# Läuft bei jedem Versionsschlagwort und auf Knopfdruck.
+# Ohne hinterlegte Apple-Geheimnisse wird nur geprüft, ob sich das Projekt bauen lässt.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+jobs:
+  ios:
+    runs-on: macos-latest
+
+    steps:
+      - name: Quelltext holen
+        uses: actions/checkout@v4
+
+      - name: Vorhandensein der Apple-Geheimnisse prüfen
+        id: pruefen
+        env:
+          P8: ${{ secrets.APPLE_API_KEY_P8 }}
+        run: |
+          if [ -n "$P8" ]; then
+            echo "signieren=ja" >> "$GITHUB_OUTPUT"
+          else
+            echo "signieren=nein" >> "$GITHUB_OUTPUT"
+            echo "Keine Apple-Geheimnisse hinterlegt – es wird nur der Bau geprüft."
+          fi
+
+      - name: Node einrichten
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Abhängigkeiten installieren
+        run: npm install
+
+      - name: iOS-Projekt erzeugen
+        run: |
+          npx cap add ios
+          npx cap sync ios
+          npx @capacitor/assets generate --ios
+
+      - name: Versionsnummer setzen
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          echo "VERSION=${GITHUB_REF_NAME#v}" >> $GITHUB_ENV
+          echo "BAUNUMMER=$(date +%y%m%d%H%M)" >> $GITHUB_ENV
+
+      # --- Ohne Geheimnisse: nur prüfen, ob es überhaupt baut ---
+      - name: Probebau ohne Signatur
+        if: steps.pruefen.outputs.signieren == 'nein'
+        run: |
+          xcodebuild -workspace ios/App/App.xcworkspace \
+            -scheme App -configuration Release \
+            -sdk iphonesimulator \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
+            build | tail -25
+
+      # --- Mit Geheimnissen: Archiv bauen und an TestFlight schicken ---
+      - name: Schlüssel für App Store Connect ablegen
+        if: steps.pruefen.outputs.signieren == 'ja'
+        env:
+          P8: ${{ secrets.APPLE_API_KEY_P8 }}
+          KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+        run: |
+          mkdir -p ~/private_keys
+          echo "$P8" | base64 -d > ~/private_keys/AuthKey_$KEY_ID.p8
+          echo "$P8" | base64 -d > $RUNNER_TEMP/AuthKey.p8
+
+      - name: Archiv bauen
+        if: steps.pruefen.outputs.signieren == 'ja'
+        env:
+          KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          ISSUER: ${{ secrets.APPLE_API_ISSUER_ID }}
+          TEAM: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          xcodebuild -workspace ios/App/App.xcworkspace \
+            -scheme App -configuration Release \
+            -archivePath $RUNNER_TEMP/App.xcarchive \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath $RUNNER_TEMP/AuthKey.p8 \
+            -authenticationKeyID "$KEY_ID" \
+            -authenticationKeyIssuerID "$ISSUER" \
+            DEVELOPMENT_TEAM="$TEAM" \
+            MARKETING_VERSION="${VERSION:-1.0.0}" \
+            CURRENT_PROJECT_VERSION="${BAUNUMMER:-1}" \
+            archive
+
+      - name: IPA erzeugen
+        if: steps.pruefen.outputs.signieren == 'ja'
+        env:
+          KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          ISSUER: ${{ secrets.APPLE_API_ISSUER_ID }}
+          TEAM: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          cat > $RUNNER_TEMP/Export.plist <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0"><dict>
+            <key>method</key><string>app-store</string>
+            <key>teamID</key><string>$TEAM</string>
+            <key>signingStyle</key><string>automatic</string>
+            <key>uploadSymbols</key><true/>
+          </dict></plist>
+          PLIST
+          xcodebuild -exportArchive \
+            -archivePath $RUNNER_TEMP/App.xcarchive \
+            -exportOptionsPlist $RUNNER_TEMP/Export.plist \
+            -exportPath $RUNNER_TEMP/ausgabe \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath $RUNNER_TEMP/AuthKey.p8 \
+            -authenticationKeyID "$KEY_ID" \
+            -authenticationKeyIssuerID "$ISSUER"
+          cp $RUNNER_TEMP/ausgabe/*.ipa ziachstund.ipa
+
+      - name: An TestFlight schicken
+        if: steps.pruefen.outputs.signieren == 'ja'
+        env:
+          KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          ISSUER: ${{ secrets.APPLE_API_ISSUER_ID }}
+        run: |
+          xcrun altool --upload-app -f ziachstund.ipa -t ios \
+            --apiKey "$KEY_ID" --apiIssuer "$ISSUER"
+          echo "Hochgeladen. Die Verarbeitung in App Store Connect dauert meist 5 bis 30 Minuten."
+
+      - name: Datei anhängen
+        if: steps.pruefen.outputs.signieren == 'ja'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ziachstund-ipa
+          path: ziachstund.ipa
+          if-no-files-found: error
+
+      - name: Schlüssel entfernen
+        if: always()
+        run: rm -f ~/private_keys/*.p8 $RUNNER_TEMP/AuthKey.p8
