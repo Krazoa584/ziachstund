@@ -1,0 +1,96 @@
+name: APK bauen
+
+# Läuft bei jedem Versionsschlagwort (z. B. v1.0.0) und auf Knopfdruck.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Quelltext holen
+        uses: actions/checkout@v4
+
+      - name: Java einrichten
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Node einrichten
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Abhängigkeiten installieren
+        run: npm install
+
+      - name: Android-Projekt erzeugen
+        run: |
+          npx cap add android
+          npx cap sync android
+          npx @capacitor/assets generate --android
+
+      - name: Versionsnummer aus dem Schlagwort übernehmen
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          NAME="${GITHUB_REF_NAME#v}"
+          CODE=$(date +%y%m%d%H)
+          sed -i "s/versionName \".*\"/versionName \"$NAME\"/"   android/app/build.gradle
+          sed -i "s/versionCode [0-9]*/versionCode $CODE/"        android/app/build.gradle
+          echo "Version $NAME (Code $CODE)"
+
+      - name: Unsignierte Fassung bauen
+        working-directory: android
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleRelease --no-daemon
+
+      - name: Signieren
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORT: ${{ secrets.KEYSTORE_PASSWORT }}
+          SCHLUESSEL_ALIAS: ${{ secrets.SCHLUESSEL_ALIAS }}
+          SCHLUESSEL_PASSWORT: ${{ secrets.SCHLUESSEL_PASSWORT }}
+        run: |
+          if [ -z "$KEYSTORE_BASE64" ]; then
+            echo "Kein Schlüsselspeicher hinterlegt – es entsteht nur eine unsignierte Datei."
+            cp android/app/build/outputs/apk/release/app-release-unsigned.apk ziachstund-unsigniert.apk
+            exit 0
+          fi
+          echo "$KEYSTORE_BASE64" | base64 -d > schluessel.jks
+          WERKZEUGE=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
+          "$WERKZEUGE/zipalign" -p -f 4 \
+            android/app/build/outputs/apk/release/app-release-unsigned.apk \
+            ziachstund-ausgerichtet.apk
+          "$WERKZEUGE/apksigner" sign \
+            --ks schluessel.jks \
+            --ks-pass "pass:$KEYSTORE_PASSWORT" \
+            --ks-key-alias "$SCHLUESSEL_ALIAS" \
+            --key-pass "pass:$SCHLUESSEL_PASSWORT" \
+            --out ziachstund.apk \
+            ziachstund-ausgerichtet.apk
+          "$WERKZEUGE/apksigner" verify --print-certs ziachstund.apk
+          rm -f schluessel.jks ziachstund-ausgerichtet.apk
+
+      - name: Datei anhängen
+        uses: actions/upload-artifact@v4
+        with:
+          name: ziachstund-apk
+          path: ziachstund*.apk
+          if-no-files-found: error
+
+      - name: An die Veröffentlichung hängen
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ziachstund*.apk
+          body: |
+            APK für Android. Zum Installieren einmalig
+            „Installation aus unbekannten Quellen" für den Browser oder Dateimanager erlauben.
+
+            Auf dem iPhone stattdessen die Seite im Safari öffnen und über
+            „Teilen → Zum Home-Bildschirm" ablegen.
